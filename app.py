@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 # --- DATA PREPARATION ---
 # Load historical master data for install-to-MAU ratio
@@ -44,6 +45,13 @@ conversion_rate = st.sidebar.slider("MPU/MAU Conversion (%)", 0.5, 10.0, 1.69) /
 use_seasonality = st.sidebar.toggle("Weighted Growth (Follow Historical Seasonality 2025/26)", value=True)
 growth_rate = st.sidebar.slider("Season Growth Rate (%)", 0, 300, 0, step=10,
     help="Linear growth ramp applied on top of weights. 0% = flat, 100% = April gets 2× the multiplier of June.")
+
+st.sidebar.divider()
+st.sidebar.header("Cost Assumptions")
+tech_high = st.sidebar.toggle("Tech Cost: High Scenario", value=False,
+    help="Low: IDR 69.3M/mo infra | High: IDR 86.6M/mo infra")
+use_tada = st.sidebar.toggle("Include TADA Reward Platform", value=False,
+    help="Adds: Deposit (10% of rev) + Transaction fee (0.4% of rev) + Annual fee IDR 45M")
 
 st.sidebar.divider()
 st.sidebar.header("Model Assumptions")
@@ -100,6 +108,38 @@ monthly_maus = [total_mau_required * w for w in norm_weights]
 monthly_purchasing = [mau * conversion_rate for mau in monthly_maus]
 monthly_revenue = [pu * arpu for pu in monthly_purchasing]
 
+# --- COST CALCULATIONS ---
+# Fixed costs per month (from forecast CSV, monthly values)
+infra_monthly = 86_625_000 if tech_high else 69_300_000
+fixed_per_month = (
+    infra_monthly  +
+    100_000_000    +  # Tech manpower
+    100_000_000    +  # Marketing tools (CRM + Attribution + Analytics)
+    30_000_000     +  # Acquisition campaign
+    30_000_000     +  # Tactical / ad hoc
+    150_000_000    +  # Marketing manpower
+    208_333_333    +  # Exclusive content production
+    50_000_000        # Reward manpower
+)
+# Variable costs as % of monthly revenue
+var_pct = 0.10 + 0.10  # Prize redemption (10%) + PBI commission (10%)
+if use_tada:
+    var_pct += 0.10 + 0.004  # TADA deposit (10%) + transaction fee (0.4%)
+
+monthly_costs = [
+    fixed_per_month
+    + monthly_revenue[i] * var_pct
+    + (45_000_000 if use_tada and i == 0 else 0)   # TADA annual fee in June only
+    for i in range(n)
+]
+monthly_net    = [monthly_revenue[i] - monthly_costs[i] for i in range(n)]
+cumulative_net = [sum(monthly_net[:i + 1]) for i in range(n)]
+
+season_total_cost = sum(monthly_costs)
+season_net        = sum(monthly_net)
+net_pct           = season_net / target_revenue
+breakeven_month   = next((months[i] for i in range(n) if cumulative_net[i] >= 0), "Not reached")
+
 df_model = pd.DataFrame({
     "Month": months,
     "Target MAU": monthly_maus,
@@ -109,6 +149,19 @@ df_model = pd.DataFrame({
 
 # --- DASHBOARD ---
 col1, col2, col3, col4 = st.columns(4)
+
+# Net to PBB summary row
+st.subheader("Season Summary")
+s1, s2, s3, s4 = st.columns(4)
+s1.metric("Total Revenue", f"IDR {target_revenue / 1e9:.2f}B")
+s2.metric("Total Cost", f"IDR {season_total_cost / 1e9:.2f}B",
+          delta=f"{-season_total_cost / target_revenue:.1%} of revenue", delta_color="inverse")
+s3.metric("Net to PBB", f"IDR {season_net / 1e9:.2f}B",
+          delta=f"{net_pct:.1%} of revenue",
+          delta_color="normal" if season_net >= 0 else "inverse")
+s4.metric("Break-Even Month", breakeven_month)
+
+st.divider()
 peak_mau_idx = monthly_maus.index(max(monthly_maus))
 peak_mau_month = months[peak_mau_idx]
 peak_mau_value = monthly_maus[peak_mau_idx]
@@ -174,3 +227,42 @@ df_table = pd.DataFrame({
 })
 df_table = df_table.set_index("Month")
 st.dataframe(df_table, use_container_width=True)
+
+# --- P&L CHART ---
+st.divider()
+st.subheader("Monthly P&L & Cumulative Break-Even")
+
+df_pl = pd.DataFrame({
+    "Month":          months,
+    "Revenue":        monthly_revenue,
+    "Total Cost":     monthly_costs,
+    "Monthly Net":    monthly_net,
+    "Cumulative Net": cumulative_net,
+})
+
+fig_pl = go.Figure()
+fig_pl.add_bar(x=df_pl["Month"], y=df_pl["Revenue"],
+               name="Revenue", marker_color="#2196F3",
+               text=[f"IDR {v/1e6:.0f}M" for v in monthly_revenue],
+               textposition="outside")
+fig_pl.add_bar(x=df_pl["Month"], y=df_pl["Total Cost"],
+               name="Total Cost", marker_color="#F44336",
+               text=[f"IDR {v/1e6:.0f}M" for v in monthly_costs],
+               textposition="outside")
+fig_pl.add_scatter(x=df_pl["Month"], y=df_pl["Cumulative Net"],
+                   name="Cumulative Net P&L", mode="lines+markers+text",
+                   text=[f"IDR {v/1e6:.0f}M" for v in cumulative_net],
+                   textposition="top center",
+                   line=dict(color="#4CAF50", width=2),
+                   marker=dict(size=8),
+                   yaxis="y2")
+fig_pl.add_hline(y=0, line_dash="dash", line_color="gray", yref="y2",
+                 annotation_text="Break-even line", annotation_position="bottom right")
+fig_pl.update_layout(
+    barmode="group",
+    title="Monthly Revenue vs Cost · Cumulative Net P&L (right axis)",
+    yaxis=dict(title="IDR / Month"),
+    yaxis2=dict(title="Cumulative Net (IDR)", overlaying="y", side="right", showgrid=False),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+st.plotly_chart(fig_pl, use_container_width=True)
