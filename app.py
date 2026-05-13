@@ -24,7 +24,22 @@ st.title("⚽ Persib App: IDR 20B Revenue Modeling")
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("Target Variables")
 target_revenue = st.sidebar.number_input("Seasonal Revenue Target (IDR)", value=20_000_000_000, step=1_000_000_000)
-arpu = st.sidebar.slider("Target ARPU (IDR)", 20000, 100000, 36822)
+# Product prices (from forecast CSV)
+PRICE_MONTHLY  = 12_000
+PRICE_ANNUAL   = 120_000
+PRICE_PASSPORT = 5_500_000
+
+st.sidebar.subheader("Product Mix (% of Purchasing Users)")
+pct_monthly  = st.sidebar.slider("MemberSIB Monthly (%)", 0, 100, 90)
+pct_annual   = st.sidebar.slider("MemberSIB Annual (%)",  0, 100 - pct_monthly, min(9, 100 - pct_monthly))
+pct_passport = 100 - pct_monthly - pct_annual
+st.sidebar.caption(f"Passport Persib: **{pct_passport}%** (derived)")
+
+arpu = (pct_monthly  / 100 * PRICE_MONTHLY +
+        pct_annual   / 100 * PRICE_ANNUAL   +
+        pct_passport / 100 * PRICE_PASSPORT)
+st.sidebar.metric("Blended ARPU", f"IDR {arpu:,.0f}")
+
 conversion_rate = st.sidebar.slider("MPU/MAU Conversion (%)", 0.5, 10.0, 1.69) / 100
 use_seasonality = st.sidebar.toggle("Weighted Growth (Follow Historical Seasonality 2025/26)", value=True)
 growth_rate = st.sidebar.slider("Season Growth Rate (%)", 0, 300, 0, step=10,
@@ -56,8 +71,13 @@ st.sidebar.markdown(f"""
 > Jun multiplier: **1.00×** → Apr multiplier: **{1 + growth_rate/100:.2f}×**  
 > Renormalized so season total always = target
 
+**Product Prices**
+> MemberSIB Monthly: IDR 12,000  
+> MemberSIB Annual: IDR 120,000  
+> Passport Persib: IDR 5,500,000
+
 **Defaults**
-> ARPU: IDR 36,822 *(avg non-ticketing ARPU, historical)*  
+> Mix: 90% Monthly · 9% Annual · 1% Passport → ARPU IDR 76,600  
 > Conversion: 1.69% *(avg MPU/MAU, historical)*
 """)
 
@@ -88,7 +108,7 @@ df_model = pd.DataFrame({
 })
 
 # --- DASHBOARD ---
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 peak_mau_idx = monthly_maus.index(max(monthly_maus))
 peak_mau_month = months[peak_mau_idx]
 peak_mau_value = monthly_maus[peak_mau_idx]
@@ -100,6 +120,8 @@ col1.metric("Required Total MAU (Sum)", f"{total_mau_required:,.0f}")
 col2.metric(f"Peak MAU ({peak_mau_month})", f"{peak_mau_value:,.0f}")
 col3.metric("Required Installs / Day", f"{required_installs_per_day:,.0f}",
             help=f"Based on avg historical install-to-MAU ratio of {avg_install_mau_ratio:.2f}x")
+col4.metric("Blended ARPU", f"IDR {arpu:,.0f}",
+            help=f"{pct_monthly}% Monthly · {pct_annual}% Annual · {pct_passport}% Passport")
 
 st.subheader("Monthly MAU Target")
 fig_mau = px.line(df_model, x="Month", y="Target MAU", markers=True,
@@ -124,3 +146,31 @@ fig_rev.update_traces(text=df_model["Revenue (IDR)"].map(lambda v: f"IDR {v/1_00
                       textposition="top center", mode="lines+markers+text")
 fig_rev.update_layout(yaxis_title="Revenue (IDR)")
 st.plotly_chart(fig_rev, use_container_width=True)
+
+# --- MONTHLY BREAKDOWN TABLE ---
+st.subheader("Monthly Breakdown")
+
+# Derive per-product buyer counts from MPU and mix
+mpu_list       = monthly_purchasing
+mau_list       = monthly_maus
+install_list   = [mau * avg_install_mau_ratio for mau in mau_list]
+register_list  = [inst * 0.70 for inst in install_list]   # Register/Install ≈ 0.70 (from forecast CSV: 8.63M / 12.33M)
+
+buyers_monthly  = [mpu * (pct_monthly  / 100) for mpu in mpu_list]
+buyers_annual   = [mpu * (pct_annual   / 100) for mpu in mpu_list]
+buyers_passport = [mpu * (pct_passport / 100) for mpu in mpu_list]
+
+df_table = pd.DataFrame({
+    "Month":              months,
+    "Revenue (IDR)":      [f"IDR {v:,.0f}" for v in monthly_revenue],
+    "MPU":                [f"{v:,.0f}" for v in mpu_list],
+    "ARPU (IDR)":         [f"IDR {arpu:,.0f}"] * n,
+    "MAU":                [f"{v:,.0f}" for v in mau_list],
+    "Register":           [f"{v:,.0f}" for v in register_list],
+    "Install":            [f"{v:,.0f}" for v in install_list],
+    "MemberSIB Monthly":  [f"{v:,.0f}" for v in buyers_monthly],
+    "MemberSIB Annual":   [f"{v:,.0f}" for v in buyers_annual],
+    "Passport Persib":    [f"{v:,.0f}" for v in buyers_passport],
+})
+df_table = df_table.set_index("Month")
+st.dataframe(df_table, use_container_width=True)
