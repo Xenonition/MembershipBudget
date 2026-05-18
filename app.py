@@ -12,6 +12,10 @@ _df_master["Total Installs"] = pd.to_numeric(_df_master["Total Installs"].astype
 _df_master = _df_master.dropna(subset=["Total Installs", "MAU"])
 avg_install_mau_ratio = (_df_master["Total Installs"] / _df_master["MAU"]).mean()
 
+# Forecast CSV derived ratios (from Forecast Cost CSV, ARPU=45K scenario, constant across all months)
+FC_INSTALL_MAU_RATIO   = 460_746 / 664_287   # ≈ 0.6934
+FC_REGISTER_MAU_RATIO  = 322_522 / 664_287   # ≈ 0.4854
+
 # Historical weights calculated from your June-April 2025/26 season
 seasonality_weights = {
     "June": 0.0459, "July": 0.0502, "August": 0.0868, "September": 0.0867,
@@ -24,7 +28,18 @@ st.title("⚽ Persib App: IDR 20B Revenue Modeling")
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("Target Variables")
-target_revenue = st.sidebar.number_input("Seasonal Revenue Target (IDR)", value=20_000_000_000, step=1_000_000_000)
+modeling_mode = st.sidebar.radio(
+    "Modeling Mode",
+    ["Revenue Target → MAU", "MAU Target → Revenue"],
+    help="Revenue Target: set IDR goal, back-calculate required MAU.\nMAU Target: set total season MAU, compute resulting revenue."
+)
+
+if modeling_mode == "Revenue Target → MAU":
+    target_revenue_input = st.sidebar.number_input("Seasonal Revenue Target (IDR)", value=20_000_000_000, step=1_000_000_000)
+    target_mau_input = None
+else:
+    target_mau_input = st.sidebar.number_input("Target Total Season MAU (Sum, 11 months)", value=5_000_000, step=100_000, min_value=1)
+    target_revenue_input = None
 # Product prices (from forecast CSV)
 PRICE_MONTHLY  = 12_000
 PRICE_ANNUAL   = 120_000
@@ -42,6 +57,13 @@ arpu = (pct_monthly  / 100 * PRICE_MONTHLY +
 st.sidebar.metric("Blended ARPU", f"IDR {arpu:,.0f}")
 
 conversion_rate = st.sidebar.slider("MPU/MAU Conversion (%)", 0.5, 10.0, 1.69) / 100
+
+# Show the derived output as a live preview in the sidebar
+if modeling_mode == "MAU Target → Revenue":
+    _preview_revenue = target_mau_input * conversion_rate * arpu
+    st.sidebar.metric("Estimated Season Revenue", f"IDR {_preview_revenue / 1e9:.2f}B",
+                      help="Total MAU × Conversion Rate × ARPU (before cost deductions)")
+
 use_seasonality = st.sidebar.toggle("Weighted Growth (Follow Historical Seasonality 2025/26)", value=True)
 growth_rate = st.sidebar.slider("Season Growth Rate (%)", 0, 300, 0, step=10,
     help="Linear growth ramp applied on top of weights. 0% = flat, 100% = April gets 2× the multiplier of June.")
@@ -52,6 +74,8 @@ tech_high = st.sidebar.toggle("Tech Cost: High Scenario", value=False,
     help="Low: IDR 69.3M/mo infra | High: IDR 86.6M/mo infra")
 use_tada = st.sidebar.toggle("Include TADA Reward Platform", value=False,
     help="Adds: Deposit (10% of rev) + Transaction fee (0.4% of rev) + Annual fee IDR 45M")
+use_forecast_funnel = st.sidebar.toggle("Use Forecast CSV Install/Register Ratios", value=False,
+    help="Off: uses historical master data install-to-MAU ratio. On: uses Forecast CSV ratios (Install/MAU=0.69, Register/MAU=0.49).")
 
 st.sidebar.divider()
 st.sidebar.header("Model Assumptions")
@@ -90,9 +114,15 @@ st.sidebar.markdown(f"""
 """)
 
 # --- CALCULATIONS ---
-# Total Revenue = Total_MAU_Sum * Conv * ARPU
-# Total_MAU_Sum = Target_Rev / (Conv * ARPU)
-total_mau_required = target_revenue / (conversion_rate * arpu)
+# Two modes:
+#   Revenue Target: Total_MAU_Sum = Target_Rev / (Conv * ARPU)
+#   MAU Target:     Target_Rev = Total_MAU_Sum * Conv * ARPU
+if modeling_mode == "Revenue Target → MAU":
+    target_revenue = target_revenue_input
+    total_mau_required = target_revenue / (conversion_rate * arpu)
+else:
+    total_mau_required = target_mau_input
+    target_revenue = total_mau_required * conversion_rate * arpu
 avg_mau = total_mau_required / 11
 
 # Monthly breakdown
@@ -153,7 +183,11 @@ col1, col2, col3, col4 = st.columns(4)
 # Net to PBB summary row
 st.subheader("Season Summary")
 s1, s2, s3, s4 = st.columns(4)
-s1.metric("Total Revenue", f"IDR {target_revenue / 1e9:.2f}B")
+s1.metric(
+    "Total Revenue" if modeling_mode == "Revenue Target → MAU" else "Projected Revenue",
+    f"IDR {target_revenue / 1e9:.2f}B",
+    help=None if modeling_mode == "Revenue Target → MAU" else "Derived: Total MAU × Conversion × ARPU"
+)
 s2.metric("Total Cost", f"IDR {season_total_cost / 1e9:.2f}B",
           delta=f"{-season_total_cost / target_revenue:.1%} of revenue", delta_color="inverse")
 s3.metric("Net to PBB", f"IDR {season_net / 1e9:.2f}B",
@@ -166,13 +200,16 @@ peak_mau_idx = monthly_maus.index(max(monthly_maus))
 peak_mau_month = months[peak_mau_idx]
 peak_mau_value = monthly_maus[peak_mau_idx]
 
-total_required_installs = total_mau_required * avg_install_mau_ratio
+active_install_mau_ratio   = FC_INSTALL_MAU_RATIO  if use_forecast_funnel else avg_install_mau_ratio
+active_register_mau_ratio  = FC_REGISTER_MAU_RATIO if use_forecast_funnel else avg_install_mau_ratio * 0.70
+
+total_required_installs = total_mau_required * active_install_mau_ratio
 required_installs_per_day = total_required_installs / (11 * 30)
 
 col1.metric("Required Total MAU (Sum)", f"{total_mau_required:,.0f}")
 col2.metric(f"Peak MAU ({peak_mau_month})", f"{peak_mau_value:,.0f}")
 col3.metric("Required Installs / Day", f"{required_installs_per_day:,.0f}",
-            help=f"Based on avg historical install-to-MAU ratio of {avg_install_mau_ratio:.2f}x")
+            help=f"{'Forecast CSV ratio' if use_forecast_funnel else 'Master data ratio'}: {active_install_mau_ratio:.4f} installs per MAU")
 col4.metric("Blended ARPU", f"IDR {arpu:,.0f}",
             help=f"{pct_monthly}% Monthly · {pct_annual}% Annual · {pct_passport}% Passport")
 
@@ -206,8 +243,8 @@ st.subheader("Monthly Breakdown")
 # Derive per-product buyer counts from MPU and mix
 mpu_list       = monthly_purchasing
 mau_list       = monthly_maus
-install_list   = [mau * avg_install_mau_ratio for mau in mau_list]
-register_list  = [inst * 0.70 for inst in install_list]   # Register/Install ≈ 0.70 (from forecast CSV: 8.63M / 12.33M)
+install_list   = [mau * active_install_mau_ratio for mau in mau_list]
+register_list  = [mau * active_register_mau_ratio for mau in mau_list]
 
 buyers_monthly  = [mpu * (pct_monthly  / 100) for mpu in mpu_list]
 buyers_annual   = [mpu * (pct_annual   / 100) for mpu in mpu_list]
