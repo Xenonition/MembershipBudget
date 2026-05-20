@@ -8,4 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Sensitive / generated data not tracked in version control
 monthly_discount_and_ticketing.csv

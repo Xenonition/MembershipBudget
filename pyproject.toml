@@ -1,7 +1,7 @@
 [project]
-name = "membershipbudget"
+name = "persib-revenue-simulator"
 version = "0.1.0"
-description = "Add your description here"
+description = "Streamlit revenue modeling tool for the Persib App membership product"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

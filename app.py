@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 
 # --- DATA PREPARATION ---
 # Load historical master data for install-to-MAU ratio
-_df_master = pd.read_csv("Persib App - Performance - Master Data.csv", thousands=",")
+_df_master = pd.read_csv("data/performance_master_data.csv", thousands=",")
 _df_master.columns = _df_master.columns.str.replace("\n", " ", regex=False).str.strip()
 _df_master["MAU"] = pd.to_numeric(_df_master["MAU"].astype(str).str.replace(",", ""), errors="coerce")
 _df_master["Total Installs"] = pd.to_numeric(_df_master["Total Installs"].astype(str).str.replace(",", ""), errors="coerce")
